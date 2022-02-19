@@ -140,13 +140,15 @@ func BenchmarkConsumer_Process(b *testing.B) {
 	}
 	defer server.close(b)
 
-	consumer := gomaxscale.NewConsumer(serverAddr, "database", "table")
-	if _, err = consumer.Start(); err != nil {
-		b.Fatalf("failed to start consumer: %s", err)
-	}
-
 	for n := 0; n < b.N; n++ {
+		consumer := gomaxscale.NewConsumer(serverAddr, "database", "table",
+			gomaxscale.WithTimeout(10*time.Millisecond, 10*time.Millisecond),
+		)
+		if _, err = consumer.Start(); err != nil {
+			b.Fatalf("failed to start consumer: %s", err)
+		}
 		consumer.Process(func(event gomaxscale.Event) {})
+		consumer.Close()
 	}
 }
 
