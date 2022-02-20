@@ -1,6 +1,6 @@
 # gomaxscale
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/rafaeljusto/gomaxscale.svg)](https://pkg.go.dev/github.com/rafaeljusto/gomaxscale)
+[![Go Reference](https://pkg.go.dev/badge/github.com/rafaeljusto/gomaxscale/v2.svg)](https://pkg.go.dev/github.com/rafaeljusto/gomaxscale/v2)
 [![license](http://img.shields.io/badge/license-MIT-blue.svg)](https://raw.githubusercontent.com/rafaeljusto/gomaxscale/master/LICENSE)
 
 Go library that allows consuming from [MaxScale](https://mariadb.com/kb/en/maxscale/)
