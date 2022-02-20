@@ -27,6 +27,9 @@ type Options struct {
 	logger     logger
 }
 
+// Option is a function that can be used to configure the library.
+type Option func(*Options)
+
 func newDefaultOptions() Options {
 	var opts Options
 	opts.uuid = "XXX-YYY_YYY"
@@ -39,7 +42,7 @@ func newDefaultOptions() Options {
 }
 
 // WithAuth sets the authentication options.
-func WithAuth(user, password string) func(*Options) {
+func WithAuth(user, password string) Option {
 	return func(o *Options) {
 		o.auth.user = user
 		o.auth.password = password
@@ -47,14 +50,14 @@ func WithAuth(user, password string) func(*Options) {
 }
 
 // WithGTID sets the GTID position.
-func WithGTID(gtid string) func(*Options) {
+func WithGTID(gtid string) Option {
 	return func(o *Options) {
 		o.gtid = gtid
 	}
 }
 
 // WithTimeout sets connection timeouts.
-func WithTimeout(readTimeout, writeTimeout time.Duration) func(*Options) {
+func WithTimeout(readTimeout, writeTimeout time.Duration) Option {
 	return func(o *Options) {
 		o.timeouts.read = readTimeout
 		o.timeouts.write = writeTimeout
@@ -63,7 +66,7 @@ func WithTimeout(readTimeout, writeTimeout time.Duration) func(*Options) {
 
 // WithStats enables statistics in the library. The ticker callback is called
 // every period of time with information about events and processing time.
-func WithStats(period time.Duration, ticker func(Stats)) func(*Options) {
+func WithStats(period time.Duration, ticker func(Stats)) Option {
 	return func(o *Options) {
 		o.stats.period = period
 		o.stats.ticker = ticker
@@ -71,28 +74,28 @@ func WithStats(period time.Duration, ticker func(Stats)) func(*Options) {
 }
 
 // WithUUID sets the UUID of the client.
-func WithUUID(uuid string) func(*Options) {
+func WithUUID(uuid string) Option {
 	return func(o *Options) {
 		o.uuid = uuid
 	}
 }
 
 // WithVersion sets the binlog version to use.
-func WithVersion(version int) func(*Options) {
+func WithVersion(version int) Option {
 	return func(o *Options) {
 		o.version = &version
 	}
 }
 
 // WithBufferSize sets the buffer size for the data stream.
-func WithBufferSize(bufferSize int) func(*Options) {
+func WithBufferSize(bufferSize int) Option {
 	return func(o *Options) {
 		o.bufferSize = bufferSize
 	}
 }
 
 // WithLogger sets the logger to report issues when processing the data stream.
-func WithLogger(logger logger) func(*Options) {
+func WithLogger(logger logger) Option {
 	return func(o *Options) {
 		o.logger = logger
 	}

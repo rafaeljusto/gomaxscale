@@ -27,7 +27,7 @@ type Consumer struct {
 }
 
 // NewConsumer creates a new Consumer instance.
-func NewConsumer(address, database, table string, optFuncs ...func(*Options)) *Consumer {
+func NewConsumer(address, database, table string, optFuncs ...Option) *Consumer {
 	opts := newDefaultOptions()
 	for _, f := range optFuncs {
 		f(&opts)
