@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rafaeljusto/gomaxscale"
+	"github.com/rafaeljusto/gomaxscale/v2"
 )
 
 const initBufferSize = 1024
@@ -34,84 +34,216 @@ func TestCustomer_Start(t *testing.T) {
 	}{{
 		name: "it should start a consumer correctly",
 		config: func(server *maxScaleServerMock) {
-			var events int
-			server.events = func() *gomaxscale.Event {
-				if events++; events > 5 {
-					return nil
-				}
-				return &gomaxscale.Event{
-					Domain:      1,
-					ServerID:    1,
-					Sequence:    1,
-					EventNumber: events,
-					Timestamp:   time.Now().Unix(),
-					Type:        "insert",
-				}
+			server.events = func() gomaxscale.CDCEvent {
+				return nil
 			}
 		},
 	}, {
 		name: "it should fail to authenticate",
 		config: func(server *maxScaleServerMock) {
 			server.failAuthentication = true
-			server.events = func() *gomaxscale.Event {
-				return nil
-			}
 		},
 		wantErr: "failed to authenticate",
 	}, {
 		name: "it should fail to register",
 		config: func(server *maxScaleServerMock) {
 			server.failRegistration = true
-			server.events = func() *gomaxscale.Event {
-				return nil
-			}
 		},
 		wantErr: "failed to register",
 	}}
 
-	var server maxScaleServerMock
-	serverAddr, err := server.start(t)
-	if err != nil {
-		t.Fatalf("failed to start server: %s", err)
-	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			defer server.reset()
+			var server maxScaleServerMock
+			serverAddr, err := server.start(t)
+			if err != nil {
+				t.Fatalf("failed to start server: %s", err)
+			}
+			defer server.close(t)
+
 			tt.config(&server)
 
 			consumer := gomaxscale.NewConsumer(serverAddr, "database", "table")
-			_, err := consumer.Start()
+			err = consumer.Start()
 			switch {
 			case err != nil && tt.wantErr == "":
-				t.Errorf("unexpected error starting consumer: %s", err)
+				t.Errorf("unexpected error: %s", err)
 			case err == nil && tt.wantErr != "":
-				t.Error("expected error starting consumer not raised")
+				t.Error("expected error not raised")
 			case err != nil && !strings.Contains(err.Error(), tt.wantErr):
-				t.Errorf("unexpected error starting consumer: %s", err)
+				t.Errorf("unexpected error: %s", err)
 			}
 			consumer.Close()
 		})
 	}
 }
 
-func ExampleConsumer_Start() {
+func TestCustomer_Process(t *testing.T) {
+	tests := []struct {
+		name      string
+		config    func(*maxScaleServerMock)
+		want      func(gomaxscale.CDCEvent) error
+		wantCount int
+		wantLogs  string
+	}{{
+		name: "it should process some events correctly",
+		config: func(server *maxScaleServerMock) {
+			var eventsIndex int
+			server.events = func() gomaxscale.CDCEvent {
+				eventsIndex++
+				switch eventsIndex {
+				case 1:
+					return gomaxscale.DDLEvent{
+						Database: "database",
+						Table:    "table",
+					}
+				case 2:
+					return gomaxscale.DMLEvent{
+						Type: "insert",
+					}
+				}
+				return nil
+			}
+		},
+		want: func() func(event gomaxscale.CDCEvent) error {
+			var eventsIndex int
+			return func(event gomaxscale.CDCEvent) error {
+				eventsIndex++
+				switch eventsIndex {
+				case 1:
+					ddlEvent, ok := event.(gomaxscale.DDLEvent)
+					if !ok {
+						return fmt.Errorf("expected ddl event instead of %T", event)
+					}
+					expected := gomaxscale.DDLEvent{
+						Database: "database",
+						Table:    "table",
+					}
+					if ddlEvent.Database != expected.Database ||
+						ddlEvent.Table != expected.Table {
+						return fmt.Errorf("unexpected ddl event: %+v", ddlEvent)
+					}
+
+				case 2:
+					dmlEvent, ok := event.(gomaxscale.DMLEvent)
+					if !ok {
+						return fmt.Errorf("expected dml event instead of %T", event)
+					}
+					expected := gomaxscale.DMLEvent{
+						Type: "insert",
+					}
+					if dmlEvent.Type != expected.Type {
+						return fmt.Errorf("unexpected dml event: %+v", dmlEvent)
+					}
+
+				default:
+					return fmt.Errorf("unexpected event: %+v", event)
+				}
+
+				return nil
+			}
+		}(),
+		wantCount: 2,
+	}, {
+		name: "it should fail when retrieving events",
+		config: func(server *maxScaleServerMock) {
+			server.failEvents = true
+			server.events = func() gomaxscale.CDCEvent {
+				return nil
+			}
+		},
+		wantLogs: "events failed",
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var server maxScaleServerMock
+			serverAddr, err := server.start(t)
+			if err != nil {
+				t.Fatalf("failed to start server: %s", err)
+			}
+			defer server.close(t)
+
+			tt.config(&server)
+
+			var logMsg string
+			loggerMock := loggerMock{
+				mockPrint: func(v ...interface{}) {
+					logMsg = fmt.Sprint(v...)
+				},
+				mockPrintf: func(format string, v ...interface{}) {
+					logMsg = fmt.Sprintf(format, v...)
+				},
+			}
+
+			consumer := gomaxscale.NewConsumer(serverAddr, "database", "table",
+				gomaxscale.WithLogger(loggerMock),
+			)
+			if err := consumer.Start(); err != nil {
+				t.Fatalf("failed to start consumer: %s", err)
+			}
+
+			var count int
+			done := make(chan bool)
+			go func() {
+				consumer.Process(func(event gomaxscale.CDCEvent) {
+					if event == nil {
+						consumer.Close()
+						done <- true
+					}
+					count++
+					if err := tt.want(event); err != nil {
+						t.Errorf("failed to process event %d: %s", count, err)
+					}
+					if count == tt.wantCount || err != nil {
+						consumer.Close()
+						done <- true
+					}
+				})
+			}()
+
+			// safety check to prevent server running forever
+			timer := time.NewTicker(100 * time.Millisecond)
+			defer timer.Stop()
+
+			select {
+			case <-done:
+			case <-timer.C:
+				t.Log("timeout waiting for consumer to finish")
+			}
+
+			if count != tt.wantCount {
+				t.Errorf("unexpected event count: %d", count)
+			}
+			if !strings.Contains(logMsg, tt.wantLogs) {
+				t.Errorf("unexpected logs: %s", logMsg)
+			}
+		})
+	}
+}
+
+func ExampleConsumer_Process() {
 	consumer := gomaxscale.NewConsumer("127.0.0.1:4001", "database", "table",
 		gomaxscale.WithAuth("maxuser", "maxpwd"),
 	)
-	dataStream, err := consumer.Start()
+	err := consumer.Start()
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer consumer.Close()
 
-	fmt.Printf("started consuming events from database '%s' table '%s'\n",
-		dataStream.Database, dataStream.Table)
+	fmt.Println("start consuming events")
 
 	done := make(chan bool)
 	go func() {
-		consumer.Process(func(event gomaxscale.Event) {
-			fmt.Printf("event '%s' detected\n", event.Type)
+		consumer.Process(func(event gomaxscale.CDCEvent) {
+			switch e := event.(type) {
+			case gomaxscale.DDLEvent:
+				fmt.Printf("ddl event detected on database '%s' and table '%s'\n",
+					e.Database, e.Table)
+			case gomaxscale.DMLEvent:
+				fmt.Printf("dml '%s' event detected\n", e.Type)
+			}
 		})
 		done <- true
 	}()
@@ -128,9 +260,13 @@ func ExampleConsumer_Start() {
 }
 
 func BenchmarkConsumer_Process(b *testing.B) {
+	b.StopTimer()
+
 	server := maxScaleServerMock{
-		events: func() *gomaxscale.Event {
-			return nil
+		events: func() gomaxscale.CDCEvent {
+			return gomaxscale.DMLEvent{
+				Type: "insert",
+			}
 		},
 	}
 
@@ -140,16 +276,26 @@ func BenchmarkConsumer_Process(b *testing.B) {
 	}
 	defer server.close(b)
 
-	for n := 0; n < b.N; n++ {
-		consumer := gomaxscale.NewConsumer(serverAddr, "database", "table",
-			gomaxscale.WithTimeout(10*time.Millisecond, 10*time.Millisecond),
-		)
-		if _, err = consumer.Start(); err != nil {
-			b.Fatalf("failed to start consumer: %s", err)
-		}
-		consumer.Process(func(event gomaxscale.Event) {})
-		consumer.Close()
+	loggerMock := loggerMock{
+		mockPrint: func(v ...interface{}) {
+			b.Log(v...)
+		},
+		mockPrintf: func(format string, v ...interface{}) {
+			b.Logf(format, v...)
+		},
 	}
+
+	consumer := gomaxscale.NewConsumer(serverAddr, "database", "table",
+		gomaxscale.WithTimeout(10*time.Millisecond, 10*time.Millisecond),
+		gomaxscale.WithLogger(loggerMock),
+	)
+	if err = consumer.Start(); err != nil {
+		b.Fatalf("failed to start consumer: %s", err)
+	}
+	defer consumer.Close()
+
+	b.StartTimer()
+	consumer.Process(func(event gomaxscale.CDCEvent) {})
 }
 
 type logger interface {
@@ -159,8 +305,9 @@ type logger interface {
 type maxScaleServerMock struct {
 	failAuthentication bool
 	failRegistration   bool
-	initialEvent       gomaxscale.DataStream
-	events             func() *gomaxscale.Event
+	failEvents         bool
+
+	events func() gomaxscale.CDCEvent
 
 	listener net.Listener
 	wgConns  sync.WaitGroup
@@ -174,7 +321,7 @@ func (m *maxScaleServerMock) start(l logger) (string, error) {
 	m.finished = make(chan bool)
 
 	var err error
-	m.listener, err = net.Listen("tcp", ":0")
+	m.listener, err = net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", fmt.Errorf("could not listen on a random port: %s", err)
 	}
@@ -221,6 +368,7 @@ func (m *maxScaleServerMock) close(l logger) {
 func (m *maxScaleServerMock) reset() {
 	m.failAuthentication = false
 	m.failRegistration = false
+	m.failEvents = false
 	m.events = nil
 }
 
@@ -299,20 +447,16 @@ func (m *maxScaleServerMock) handleConnection(conn net.Conn) {
 		return
 	}
 
-	//
-	// Initial event
-	//
-
-	encoder := json.NewEncoder(conn)
-
-	if err := encoder.Encode(m.initialEvent); err != nil {
-		_, _ = writeString(conn, "ERR failed encoding initial event: %s", err)
+	if m.failEvents {
+		_, _ = writeString(conn, "ERR events failed")
 		return
 	}
 
 	//
 	// Events
 	//
+
+	encoder := json.NewEncoder(conn)
 
 	for {
 		select {
@@ -323,6 +467,7 @@ func (m *maxScaleServerMock) handleConnection(conn net.Conn) {
 
 		event := m.events()
 		if event == nil {
+			// tests finished
 			break
 		}
 		if err := encoder.Encode(event); err != nil {
@@ -352,4 +497,17 @@ func writeString(conn net.Conn, format string, a ...interface{}) (int, error) {
 		return 0, fmt.Errorf("failed to write data: %s", err)
 	}
 	return n, nil
+}
+
+type loggerMock struct {
+	mockPrint  func(v ...interface{})
+	mockPrintf func(format string, v ...interface{})
+}
+
+func (l loggerMock) Print(v ...interface{}) {
+	l.mockPrint(v...)
+}
+
+func (l loggerMock) Printf(format string, v ...interface{}) {
+	l.mockPrintf(format, v...)
 }
