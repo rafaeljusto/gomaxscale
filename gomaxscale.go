@@ -126,6 +126,9 @@ func NewConsumer(address, database, table string, optFuncs ...func(*Options)) *C
 //
 // https://mariadb.com/kb/en/mariadb-maxscale-6-change-data-capture-cdc-protocol/
 func (g *Consumer) Start() (*DataStream, error) {
+	g.options.logger.Print("⚠️  This is an older version of the library with some protocol misconceptions. " +
+		"Please upgrade to a newer version.")
+
 	// if the consumer is already running, close it before starting a new one
 	if g.done != nil {
 		g.Close()
