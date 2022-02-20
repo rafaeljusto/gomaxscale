@@ -10,11 +10,17 @@ import (
 	"io"
 	"log"
 	"net"
+	"regexp"
 	"strconv"
 	"time"
 )
 
 const initBufferSize = 1024
+
+var (
+	reDDLEvent = regexp.MustCompile(`{"namespace":`)
+	reDMLEvent = regexp.MustCompile(`{"domain":`)
+)
 
 // Options stores all available options to connect with MaxScale.
 type Options struct {
@@ -97,7 +103,7 @@ type Consumer struct {
 	table    string
 	options  Options
 
-	events chan Event
+	events chan CDCEvent
 	done   chan bool
 }
 
@@ -125,18 +131,18 @@ func NewConsumer(address, database, table string, optFuncs ...func(*Options)) *C
 // Start connects to MaxScale and starts consuming events.
 //
 // https://mariadb.com/kb/en/mariadb-maxscale-6-change-data-capture-cdc-protocol/
-func (g *Consumer) Start() (*DataStream, error) {
+func (g *Consumer) Start() error {
 	// if the consumer is already running, close it before starting a new one
 	if g.done != nil {
 		g.Close()
 	}
 
-	g.events = make(chan Event)
+	g.events = make(chan CDCEvent)
 	g.done = make(chan bool)
 
 	conn, err := net.Dial("tcp", g.address)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	//
@@ -146,20 +152,20 @@ func (g *Consumer) Start() (*DataStream, error) {
 	var auth bytes.Buffer
 	if _, err := auth.WriteString(g.options.auth.user); err != nil {
 		g.disconnect(conn)
-		return nil, fmt.Errorf("failed to write username in authentication: %w", err)
+		return fmt.Errorf("failed to write username in authentication: %w", err)
 	}
 	if _, err := auth.WriteString(":"); err != nil {
 		g.disconnect(conn)
-		return nil, fmt.Errorf("failed to write separator in authentication: %w", err)
+		return fmt.Errorf("failed to write separator in authentication: %w", err)
 	}
 	password := sha1.Sum([]byte(g.options.auth.password))
 	if _, err := auth.Write(password[:]); err != nil {
 		g.disconnect(conn)
-		return nil, fmt.Errorf("failed to write password in authentication: %w", err)
+		return fmt.Errorf("failed to write password in authentication: %w", err)
 	}
 	if err := g.writeInitRequest(conn, []byte(hex.EncodeToString(auth.Bytes()))); err != nil {
 		g.disconnect(conn)
-		return nil, fmt.Errorf("failed to authenticate: %w", err)
+		return fmt.Errorf("failed to authenticate: %w", err)
 	}
 
 	//
@@ -168,7 +174,7 @@ func (g *Consumer) Start() (*DataStream, error) {
 
 	if err := g.writeInitRequest(conn, []byte("REGISTER UUID="+g.options.uuid+", TYPE=JSON")); err != nil {
 		g.disconnect(conn)
-		return nil, fmt.Errorf("failed to register: %w", err)
+		return fmt.Errorf("failed to register: %w", err)
 	}
 
 	//
@@ -185,30 +191,14 @@ func (g *Consumer) Start() (*DataStream, error) {
 	}
 	if _, err := conn.Write(requestDataStream.Bytes()); err != nil {
 		g.disconnect(conn)
-		return nil, fmt.Errorf("failed to request data stream: %w", err)
+		return fmt.Errorf("failed to request data stream: %w", err)
 	}
 
-	stream := stream{
-		conn:        conn,
-		readTimeout: g.options.timeouts.read,
-		timeRef:     g.options.timeouts.timeRef,
-		bufferSize:  g.options.bufferSize,
-	}
-
-	//
-	// Initial event
-	//
-
-	response, err := stream.scan()
-	if err != nil {
-		g.disconnect(conn)
-		return nil, fmt.Errorf("failed to read initial data stream: %w", err)
-	}
-	var dataStream DataStream
-	if err := json.Unmarshal(response, &dataStream); err != nil {
-		g.disconnect(conn)
-		return nil, fmt.Errorf("failed to decode initial data stream '%s': %w", string(response), err)
-	}
+	var stream stream
+	stream.conn = conn
+	stream.readTimeout = g.options.timeouts.read
+	stream.timeRef = g.options.timeouts.timeRef
+	stream.bufferSize = g.options.bufferSize
 
 	//
 	// Events
@@ -222,7 +212,7 @@ func (g *Consumer) Start() (*DataStream, error) {
 				return
 
 			default:
-				response, err := stream.scan()
+				events, err := stream.scan()
 				if err != nil {
 					errCause := err
 					for errors.Unwrap(errCause) != nil {
@@ -233,31 +223,25 @@ func (g *Consumer) Start() (*DataStream, error) {
 						return
 					}
 					if netErr, ok := errCause.(net.Error); !ok || !netErr.Timeout() {
-						g.options.logger.Printf("failed to read from data stream: %s", err)
+						g.options.logger.Printf("failed to read from dml event: %s", err)
 					}
 					continue
-
-				} else if len(response) == 0 {
-					continue
 				}
 
-				var event Event
-				if err := json.Unmarshal(response, &event); err != nil {
-					g.options.logger.Printf("failed to decode '%s' from data stream: %s", string(response), err)
-					continue
+				for i := range events {
+					g.events <- events[i]
 				}
-				event.RawData = response
-				g.events <- event
 			}
 		}
 	}()
 
-	return &dataStream, nil
+	return nil
 }
 
-// Process starts consuming events and trigerring the callback function for each
-// event.
-func (g *Consumer) Process(eventFunc func(Event)) {
+// Process starts consuming events, trigerring eventFunc callback for each
+// event. This can be ran by multiple goroutines concurrently to speed-up the
+// event processing.
+func (g *Consumer) Process(eventFunc func(CDCEvent)) {
 	for event := range g.events {
 		eventFunc(event)
 	}
@@ -322,13 +306,13 @@ type stream struct {
 	readTimeout time.Duration
 	timeRef     func() time.Time
 
-	buffer     []byte
-	bufferSize int
+	buffer           bytes.Buffer
+	bufferIdentation int
+	bufferSize       int
 }
 
-func (s *stream) scan() ([]byte, error) {
-	var response bytes.Buffer
-	var identation int
+func (s *stream) scan() ([]CDCEvent, error) {
+	var responses []bytes.Buffer
 	var loops int
 
 	for {
@@ -336,36 +320,68 @@ func (s *stream) scan() ([]byte, error) {
 			return nil, fmt.Errorf("failed to set read timeout: %w", err)
 		}
 
-		tmpBuffer := make([]byte, s.bufferSize)
-		n, err := s.conn.Read(tmpBuffer)
+		buffer := make([]byte, s.bufferSize)
+		n, err := s.conn.Read(buffer)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
-		tmpBuffer = tmpBuffer[:n]
+		buffer = buffer[:n]
 
-		if s.buffer != nil {
-			tmpBuffer = append(s.buffer, tmpBuffer...)
-			s.buffer = s.buffer[:0]
-		}
-
-		var i int
-		for _, b := range tmpBuffer {
+		var nonJSON bool
+		for _, b := range buffer {
+			var action bool
 			if b == '{' {
-				identation++
+				s.bufferIdentation++
+				action = true
 			} else if b == '}' {
-				identation--
+				s.bufferIdentation--
+				action = true
 			}
-			i++
-			if identation == 0 {
-				break
+			if s.bufferIdentation == 0 && s.buffer.Len() == 0 {
+				// random test outside of the JSON object is a server error
+				// message being returned
+				nonJSON = true
+			} else if s.bufferIdentation > 0 && nonJSON {
+				// non-JSON data ended and new JSON data started
+				var response bytes.Buffer
+				response.Write(s.buffer.Bytes())
+
+				if len(bytes.TrimSpace(response.Bytes())) > 0 {
+					responses = append(responses, response)
+				}
+
+				s.buffer.Reset()
+				nonJSON = false
+			}
+			if err := s.buffer.WriteByte(b); err != nil {
+				return nil, fmt.Errorf("failed to process response byte: %w", err)
+			}
+			if action && s.bufferIdentation == 0 {
+				var response bytes.Buffer
+				response.Write(s.buffer.Bytes())
+
+				if len(bytes.TrimSpace(response.Bytes())) > 0 {
+					responses = append(responses, response)
+				}
+
+				s.buffer.Reset()
+				action = false
 			}
 		}
+		if nonJSON {
+			// non-JSON data must fit inside a single buffer read call as we
+			// can't determinate when it finishes
+			var response bytes.Buffer
+			response.Write(s.buffer.Bytes())
 
-		response.Write(tmpBuffer[:i])
-		if identation == 0 {
-			if i < len(tmpBuffer) {
-				s.buffer = tmpBuffer[i:]
+			if len(bytes.TrimSpace(response.Bytes())) > 0 {
+				responses = append(responses, response)
 			}
+
+			s.buffer.Reset()
+		}
+
+		if len(responses) > 0 {
 			break
 		}
 
@@ -374,7 +390,40 @@ func (s *stream) scan() ([]byte, error) {
 			return nil, errors.New("too many network iterations to find a json object")
 		}
 	}
-	return bytes.TrimSpace(response.Bytes()), checkResponseError(response.Bytes())
+
+	var events []CDCEvent
+	for i := range responses {
+		if event, err := s.decodeEvent(responses[i].Bytes()); err == nil {
+			events = append(events, event)
+		} else {
+			return nil, err
+		}
+	}
+	return events, nil
+}
+
+func (s *stream) decodeEvent(response []byte) (CDCEvent, error) {
+	switch {
+	case reDDLEvent.Match(response):
+		var ddlEvent DDLEvent
+		if err := json.Unmarshal(response, &ddlEvent); err != nil {
+			return nil, fmt.Errorf("failed to decode ddl event: %w", err)
+		}
+		return ddlEvent, nil
+
+	case reDMLEvent.Match(response):
+		var dmlEvent DMLEvent
+		if err := json.Unmarshal(response, &dmlEvent); err != nil {
+			return nil, fmt.Errorf("failed to decode dml event: %w", err)
+		}
+		dmlEvent.RawData = response
+		return dmlEvent, nil
+	}
+
+	if err := checkResponseError(response); err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("unknown maxscale event type: %s", string(response))
 }
 
 func checkResponseError(response []byte) error {
@@ -384,10 +433,26 @@ func checkResponseError(response []byte) error {
 	return nil
 }
 
-// DataStream is the first event response with the target table information.
+// CDCEventType is the type of the event.
+type CDCEventType string
+
+// List of possible event types.
+const (
+	// CDCEventTypeDDL DDL (Data Definition Language) are for database changes.
+	CDCEventTypeDDL CDCEventType = "ddlEvent"
+	// CDCEventTypeDML DML (Data Manipulation Language) are for data changes.
+	CDCEventTypeDML CDCEventType = "dmlEvent"
+)
+
+// CDCEvent is the CDC event received from MaxScale.
+type CDCEvent interface {
+	EventType() CDCEventType
+}
+
+// DDLEvent is a MaxScale DDL event.
 //
-// https://avro.apache.org/docs/1.11.0/spec.html#schemas
-type DataStream struct {
+// https://github.com/mariadb-corporation/MaxScale/blob/6.2/Documentation/Routers/KafkaCDC.md#overview
+type DDLEvent struct {
 	Namespace string `json:"namespace"`
 	Type      string `json:"type"`
 	Name      string `json:"name"`
@@ -398,14 +463,21 @@ type DataStream struct {
 	Fields    []struct {
 		Name     string      `json:"name"`
 		Type     interface{} `json:"type"`
-		RealType string      `json:"real_type"`
-		Length   int         `json:"length"`
-		Unsigned bool        `json:"unsigned"`
+		RealType *string     `json:"real_type"`
+		Length   *int        `json:"length"`
+		Unsigned *bool       `json:"unsigned"`
 	} `json:"fields"`
 }
 
-// Event is a MaxScale event.
-type Event struct {
+// EventType returns the type of the event.
+func (d DDLEvent) EventType() CDCEventType {
+	return CDCEventTypeDDL
+}
+
+// DMLEvent is a MaxScale DML event.
+//
+// https://github.com/mariadb-corporation/MaxScale/blob/6.2/Documentation/Routers/KafkaCDC.md#overview
+type DMLEvent struct {
 	Domain      int    `json:"domain"`
 	ServerID    int    `json:"server_id"`
 	Sequence    int    `json:"sequence"`
@@ -413,4 +485,9 @@ type Event struct {
 	Timestamp   int64  `json:"timestamp"`
 	Type        string `json:"event_type"`
 	RawData     []byte `json:"-"`
+}
+
+// EventType returns the type of the event.
+func (d DMLEvent) EventType() CDCEventType {
+	return CDCEventTypeDML
 }

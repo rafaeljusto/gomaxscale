@@ -155,26 +155,31 @@ import (
   "os/signal"
   "syscall"
 
-  "github.com/rafaeljusto/gomaxscale"
+  "github.com/rafaeljusto/gomaxscale/v2"
 )
 
 func main() {
   consumer := gomaxscale.NewConsumer("127.0.0.1:4001", "example", "users",
     gomaxscale.WithAuth("maxuser", "maxpwd"),
   )
-  dataStream, err := consumer.Start()
+  err := consumer.Start()
   if err != nil {
     log.Fatal(err)
   }
   defer consumer.Close()
 
-  fmt.Printf("started consuming events from database '%s' table '%s'\n",
-    dataStream.Database, dataStream.Table)
+  fmt.Println("start consuming events")
 
   done := make(chan bool)
   go func() {
-    consumer.Process(func(event gomaxscale.Event) {
-      fmt.Printf("event '%s' detected\n", event.Type)
+    consumer.Process(func(event gomaxscale.CDCEvent) {
+      switch e := event.(type) {
+      case gomaxscale.DDLEvent:
+        fmt.Printf("ddl event detected on database '%s' and table '%s'\n",
+          e.Database, e.Table)
+      case gomaxscale.DMLEvent:
+        fmt.Printf("dml '%s' event detected\n", e.Type)
+      }
     })
     done <- true
   }()
