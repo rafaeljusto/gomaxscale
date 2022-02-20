@@ -479,7 +479,10 @@ func (m *maxScaleServerMock) handleConnection(conn net.Conn) {
 			break
 		}
 		if err := encoder.Encode(event); err != nil {
-			_, _ = writeString(conn, "ERR failed encoding event: %s", err)
+			// only write error back if the connection is still open
+			if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+				_, _ = writeString(conn, "ERR failed encoding event: %s", err)
+			}
 			return
 		}
 	}
