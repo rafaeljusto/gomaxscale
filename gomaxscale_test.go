@@ -288,6 +288,14 @@ func BenchmarkConsumer_Process(b *testing.B) {
 	consumer := gomaxscale.NewConsumer(serverAddr, "database", "table",
 		gomaxscale.WithTimeout(10*time.Millisecond, 10*time.Millisecond),
 		gomaxscale.WithLogger(loggerMock),
+		gomaxscale.WithStats(time.Second, func(stats gomaxscale.Stats) {
+			var averageProcessingTime time.Duration
+			if stats.NumberOfEvents > 0 {
+				averageProcessingTime = stats.ProcessingTime / time.Duration(stats.NumberOfEvents)
+			}
+			b.Logf("stats: %d events/second, average processing time %s",
+				stats.NumberOfEvents, averageProcessingTime)
+		}),
 	)
 	if err = consumer.Start(); err != nil {
 		b.Fatalf("failed to start consumer: %s", err)

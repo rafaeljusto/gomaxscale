@@ -20,6 +20,7 @@ type Consumer struct {
 	database string
 	table    string
 	options  Options
+	stats    Stats
 
 	events chan CDCEvent
 	done   chan bool
@@ -116,6 +117,23 @@ func (g *Consumer) Start() error {
 	//
 
 	go func() {
+		if g.options.stats.period > 0 {
+			statsTimer := time.NewTicker(g.options.stats.period)
+			defer statsTimer.Stop()
+
+			go func() {
+				for {
+					select {
+					case <-statsTimer.C:
+						g.options.stats.ticker(g.stats)
+						g.stats.reset()
+					case <-g.done:
+						return
+					}
+				}
+			}()
+		}
+
 		for {
 			select {
 			case <-g.done:
@@ -153,8 +171,16 @@ func (g *Consumer) Start() error {
 // event. This can be ran by multiple goroutines concurrently to speed-up the
 // event processing.
 func (g *Consumer) Process(eventFunc func(CDCEvent)) {
-	for event := range g.events {
+	process := func(eventFunc func(CDCEvent), event CDCEvent) {
+		if g.options.stats.period > 0 {
+			start := time.Now()
+			defer g.stats.add(time.Since(start))
+		}
+
 		eventFunc(event)
+	}
+	for event := range g.events {
+		process(eventFunc, event)
 	}
 }
 
