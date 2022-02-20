@@ -16,6 +16,10 @@ type Options struct {
 		read    time.Duration
 		write   time.Duration
 	}
+	stats struct {
+		period time.Duration
+		ticker func(Stats)
+	}
 	uuid       string
 	version    *int
 	gtid       string // Requested GTID position
@@ -54,6 +58,15 @@ func WithTimeout(readTimeout, writeTimeout time.Duration) func(*Options) {
 	return func(o *Options) {
 		o.timeouts.read = readTimeout
 		o.timeouts.write = writeTimeout
+	}
+}
+
+// WithStats enables statistics in the library. The ticker callback is called
+// every period of time with information about events and processing time.
+func WithStats(period time.Duration, ticker func(Stats)) func(*Options) {
+	return func(o *Options) {
+		o.stats.period = period
+		o.stats.ticker = ticker
 	}
 }
 

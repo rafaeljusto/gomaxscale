@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
 // CDCEventType is the type of the event.
@@ -191,4 +193,21 @@ type DMLEvent struct {
 // EventType returns the type of the event.
 func (d DMLEvent) EventType() CDCEventType {
 	return CDCEventTypeDML
+}
+
+// Stats stores information about the running library in a specific period of
+// time.
+type Stats struct {
+	NumberOfEvents int64
+	ProcessingTime time.Duration
+}
+
+func (s *Stats) add(processingTime time.Duration) {
+	atomic.AddInt64(&s.NumberOfEvents, 1)
+	atomic.AddInt64((*int64)(&s.ProcessingTime), processingTime.Nanoseconds())
+}
+
+func (s *Stats) reset() {
+	atomic.StoreInt64(&s.NumberOfEvents, 0)
+	atomic.StoreInt64((*int64)(&s.ProcessingTime), 0)
 }
