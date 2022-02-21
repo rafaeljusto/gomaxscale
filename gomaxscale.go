@@ -172,6 +172,12 @@ func (g *Consumer) Start() error {
 // event processing.
 func (g *Consumer) Process(eventFunc func(CDCEvent)) {
 	process := func(eventFunc func(CDCEvent), event CDCEvent) {
+		defer func() {
+			if r := recover(); r != nil {
+				g.options.logger.Printf("panic detected while processing: %s", r)
+			}
+		}()
+
 		if g.options.stats.period > 0 {
 			start := time.Now()
 			defer g.stats.add(time.Since(start))
