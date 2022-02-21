@@ -12,24 +12,49 @@ import (
 )
 
 var (
-	host     = flag.String("host", "127.0.0.1:4001", "MaxScale CDC listener address")
-	database = flag.String("database", "", "Database name")
-	table    = flag.String("table", "", "Table name")
-	user     = flag.String("user", "", "Username for authenticating to MaxScale")
-	password = flag.String("password", "", "Password for authenticating to MaxScale")
+	maxScaleHost = flag.String(
+		"maxscale-host",
+		func() string {
+			if os.Getenv("GOMAXSCALE_MAXSCALE_HOST") != "" {
+				return os.Getenv("GOMAXSCALE_MAXSCALE_HOST")
+			}
+			return "127.0.0.1:4001"
+		}(),
+		"MaxScale CDC listener address",
+	)
+	maxScaleUser = flag.String(
+		"maxscale-user",
+		os.Getenv("GOMAXSCALE_MAXSCALE_USER"),
+		"Username for authenticating to MaxScale",
+	)
+	maxScalePassword = flag.String(
+		"maxscale-password",
+		os.Getenv("GOMAXSCALE_MAXSCALE_PASSWORD"),
+		"Password for authenticating to MaxScale",
+	)
+	databaseName = flag.String(
+		"database-name",
+		os.Getenv("GOMAXSCALE_DATABASE_NAME"),
+		"Database name",
+	)
+	databaseTable = flag.String(
+		"database-table",
+		os.Getenv("GOMAXSCALE_DATABASE_TABLE"),
+		"Table name",
+	)
 )
 
 func main() {
 	flag.Parse()
 
-	if *database == "" || *table == "" {
+	if *databaseName == "" || *databaseTable == "" {
 		fmt.Fprintln(os.Stderr, "You must specify database and table")
 		flag.Usage()
 		os.Exit(1)
 	}
 
-	consumer := gomaxscale.NewConsumer(*host, *database, *table,
-		gomaxscale.WithAuth(*user, *password),
+	consumer := gomaxscale.NewConsumer(*maxScaleHost, *databaseName, *databaseTable,
+		gomaxscale.WithAuth(*maxScaleUser, *maxScalePassword),
 	)
 
 	err := consumer.Start()
