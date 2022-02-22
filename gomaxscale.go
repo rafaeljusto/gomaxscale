@@ -54,7 +54,7 @@ func (g *Consumer) Start() error {
 
 	conn, err := net.Dial("tcp", g.address)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to connect to maxscale: %w", err)
 	}
 
 	//

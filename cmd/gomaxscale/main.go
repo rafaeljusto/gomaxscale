@@ -59,7 +59,7 @@ func main() {
 
 	err := consumer.Start()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("failed to start: %s", err)
 	}
 	defer consumer.Close()
 
