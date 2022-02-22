@@ -202,11 +202,27 @@ func (g *Consumer) Close() {
 		return
 	}
 
-	g.done <- true
+	// set a maximum time to wait for the consumer to close
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+
+	select {
+	case g.done <- true:
+	case <-timer.C:
+		g.options.logger.Print("timeout on graceful shutdow waiting to signal process")
+		return
+	}
+
 	for {
 		// wait for the last event to be processed
-		if _, ok := <-g.events; !ok {
-			break
+		select {
+		case _, ok := <-g.events:
+			if !ok {
+				return
+			}
+		case <-timer.C:
+			g.options.logger.Print("timeout on graceful shutdow waiting for remaining events")
+			return
 		}
 		time.Sleep(time.Millisecond * 100)
 	}
