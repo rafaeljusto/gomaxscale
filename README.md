@@ -40,6 +40,7 @@ A basic schema adding the MaxScale user, and some testing database to play with:
 ```sql
 RESET MASTER;
 
+-- https://mariadb.com/kb/en/mariadb-maxscale-6-setting-up-mariadb-maxscale/#creating-a-user-account-for-maxscale
 CREATE USER 'maxuser'@'%' IDENTIFIED BY 'maxpwd';
 GRANT REPLICATION SLAVE ON *.* TO 'maxuser'@'%';
 GRANT REPLICATION CLIENT ON *.* TO 'maxuser'@'%';
@@ -51,9 +52,14 @@ GRANT SELECT ON mysql.procs_priv TO 'maxuser'@'%';
 GRANT SELECT ON mysql.proxies_priv TO 'maxuser'@'%';
 GRANT SELECT ON mysql.roles_mapping TO 'maxuser'@'%';
 GRANT SHOW DATABASES ON *.* TO 'maxuser'@'%';
+FLUSH PRIVILEGES;
 
 DROP DATABASE IF EXISTS example;
 CREATE DATABASE IF NOT EXISTS example;
+
+-- Allow MaxScale user to run 'SHOW CREATE TABLE' for DDL events
+GRANT SELECT ON example.* TO 'maxuser'@'%';
+FLUSH PRIVILEGES;
 
 USE example;
 
@@ -91,6 +97,7 @@ protocol=MariaDBBackend
 type=service
 router=avrorouter
 servers=server1
+server_id=1
 user=maxuser
 password=maxpwd
 
