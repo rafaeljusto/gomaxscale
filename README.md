@@ -57,7 +57,8 @@ FLUSH PRIVILEGES;
 DROP DATABASE IF EXISTS example;
 CREATE DATABASE IF NOT EXISTS example;
 
--- Allow MaxScale user to run 'SHOW CREATE TABLE' for DDL events
+-- Allows MaxScale user to run 'SHOW CREATE TABLE' for DDL events
+-- https://mariadb.com/kb/en/mariadb-maxscale-6-avrorouter/#avro-schema-generator
 GRANT SELECT ON example.* TO 'maxuser'@'%';
 FLUSH PRIVILEGES;
 
@@ -78,6 +79,7 @@ INSERT INTO `users` (`name`, `email`) VALUES ('Jane Doe', 'jane@doe.com');
 ### maxscale.cnf
 
 MaxScale configuration to configure the [Avro router](https://mariadb.com/kb/en/mariadb-maxscale-6-avrorouter/)
+([direct replication mode](https://mariadb.com/kb/en/mariadb-maxscale-6-avrorouter/#direct-replication-mode))
 and expose a listener so `gomaxscale` can retrieve the information.
 
 ```dosini

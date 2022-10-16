@@ -26,7 +26,7 @@ type CDCEvent interface {
 
 // DDLEvent is a MaxScale DDL event.
 //
-// https://github.com/mariadb-corporation/MaxScale/blob/6.2/Documentation/Routers/KafkaCDC.md#overview
+// https://github.com/mariadb-corporation/MaxScale/blob/maxscale-6.2.4/Documentation/Routers/KafkaCDC.md#overview
 type DDLEvent struct {
 	Namespace string          `json:"namespace"`
 	Type      string          `json:"type"`
@@ -168,7 +168,7 @@ func (d DDLEventFieldValueEnum) Type() DDLEventFieldType {
 
 // DMLEvent is a MaxScale DML event.
 //
-// https://github.com/mariadb-corporation/MaxScale/blob/6.2/Documentation/Routers/KafkaCDC.md#overview
+// https://github.com/mariadb-corporation/MaxScale/blob/maxscale-6.2.4/Documentation/Routers/KafkaCDC.md#overview
 type DMLEvent struct {
 	Domain      int    `json:"domain"`
 	ServerID    int    `json:"server_id"`
